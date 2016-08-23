@@ -75,34 +75,39 @@ func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]Disco
 		}
 
 		for _, instance := range instances {
-			ip, err := findInstanceIP(instance)
+			target, err := InstanceToTarget(instance, config)
 			if err != nil {
-				log.Errorf("Could not find ip for instance: %+v", err)
-				continue
+				return []DiscoveryTarget{}, err
 			}
-
-			endpoints := make([]string, 0, len(config.Ports))
-			for _, port := range config.Ports {
-				endpoints = append(endpoints, fmt.Sprintf("%v:%v", ip, port))
-			}
-
-			labels := map[string]string{}
-			for _, tag := range instance.Tags.Items {
-				labels[fmt.Sprintf("gce_instance_tag_%v", formatTag(tag))] = "true"
-			}
-			labels["gce_instance_zone"] = parseResource(instance.Zone)
-			labels["gce_instance_type"] = parseResource(instance.MachineType)
-
-			target := DiscoveryTarget{
-				Targets: endpoints,
-				Labels:  labels,
-			}
-
 			targets = append(targets, target)
 		}
 	}
 
 	return targets, nil
+}
+
+func InstanceToTarget(instance *compute.Instance, config SearchConfig) (DiscoveryTarget, error) {
+	ip, err := findInstanceIP(instance)
+	if err != nil {
+		return DiscoveryTarget{}, errors.Wrap(err, "Could not find ip for instance")
+	}
+
+	endpoints := make([]string, 0, len(config.Ports))
+	for _, port := range config.Ports {
+		endpoints = append(endpoints, fmt.Sprintf("%v:%v", ip, port))
+	}
+
+	labels := map[string]string{}
+	for _, tag := range instance.Tags.Items {
+		labels[fmt.Sprintf("gce_instance_tag_%v", formatTag(tag))] = "true"
+	}
+	labels["gce_instance_zone"] = parseResource(instance.Zone)
+	labels["gce_instance_type"] = parseResource(instance.MachineType)
+
+	return DiscoveryTarget{
+		Targets: endpoints,
+		Labels:  labels,
+	}, nil
 }
 
 func DiscoverComputeByProjectTags(ctx context.Context, project string, searchTags []string) ([]*compute.Instance, error) {
