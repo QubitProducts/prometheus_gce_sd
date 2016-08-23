@@ -103,6 +103,7 @@ func InstanceToTarget(instance *compute.Instance, config SearchConfig) (Discover
 	}
 	labels["gce_instance_zone"] = parseResource(instance.Zone)
 	labels["gce_instance_type"] = parseResource(instance.MachineType)
+	labels["gce_instance_project"] = config.Project
 
 	return DiscoveryTarget{
 		Targets: endpoints,
