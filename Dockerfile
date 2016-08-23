@@ -1,10 +1,5 @@
 FROM ubuntu
-MAINTAINER Calum Gardner <calum@qubit.com>
 
-RUN apt-get update
-RUN apt-get install -y ca-certificates
+COPY ./prometheus_gce_sd /usr/bin/prometheus_gce_sd
 
-COPY ./gce-discoverer /gce-discoverer
-COPY ./run.sh /run.sh
-
-ENTRYPOINT ["/run.sh"]
+ENTRYPOINT ["/usr/bin/prometheus_gce_sd"]
