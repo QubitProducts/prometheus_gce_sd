@@ -20,7 +20,7 @@ func TestLoadConfigFile(t *testing.T) {
 			path: "./test/config_valid.yaml",
 			expected: []SearchConfig{
 				{
-					Tag:     "Zookeeper",
+					Tags:    []string{"Zookeeper"},
 					Project: "sandbox",
 					Ports:   []int{8080, 6060},
 				},

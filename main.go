@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"time"
 	"strings"
+	"time"
 
 	log "github.com/golang/glog"
 	"github.com/pkg/errors"
@@ -104,7 +104,6 @@ func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]Disco
 
 	return targets, nil
 }
-
 
 func DiscoverComputeByProjectTags(ctx context.Context, project string, searchTags []string) ([]*compute.Instance, error) {
 	service, err := NewComputeService(ctx)
