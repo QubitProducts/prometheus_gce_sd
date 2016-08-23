@@ -8,9 +8,9 @@ build:
 	go build .
 
 docker_build:
-	docker run --rm -v "$$PWD":/go/src/github.com/qubitdigital/prometheus_gce_sd \
+	docker run --rm -v "$$PWD":/go/src/github.com/QubitGroup/prometheus_gce_sd \
 	  -e GOPATH=/go \
-	  -w /go/src/github.com/qubitdigital/prometheus_gce_sd \
+	  -w /go/src/github.com/QubitGroup/prometheus_gce_sd \
 	  golang:1.7 make build
 
 docker_image_build: docker_build
