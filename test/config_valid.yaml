@@ -1,4 +1,5 @@
-- tag: zookeeper
+- tags:
+    - zookeeper
   project: sandbox
   ports:
     - 8080
