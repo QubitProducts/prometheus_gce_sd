@@ -4,102 +4,203 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"time"
 
-	"github.com/golang/glog"
+	log "github.com/golang/glog"
+	"github.com/pkg/errors"
 	"golang.org/x/net/context"
-	"golang.org/x/oauth2/google"
 	"gopkg.in/yaml.v2"
 
+	"golang.org/x/oauth2/google"
 	compute "google.golang.org/api/compute/v1"
 )
 
 var (
-	scope = compute.ComputeScope
-
-	tag     = flag.String("tag", os.Getenv("COMPUTE_TAG"), "What tag should we discover?")
-	project = flag.String("project", os.Getenv("GCE_PROJECT"), "What project should we watch?")
-	outfile = flag.String("filetowrite", os.Getenv("FILE_TO_WRITE"), "Where should we write our results? eg, /tmp/out.yml")
-	port    = flag.String("porttowatch", os.Getenv("PORT_TO_WATCH"), "What port should we poll? eg. 80")
-	route   = flag.String("route", os.Getenv("ROUTE"), "What route should we get? /metrics")
+	configFilename    = flag.String("config", os.Getenv("GCE_DISCOVERER_CONFIG"), "Path to config file")
+	outputFilename    = flag.String("output", os.Getenv("GCE_DISCOVERER_OUTPUT"), "Path to results file")
+	discoveryInterval = flag.Duration("discovery-interval", 30*time.Second, "Period of discovery update")
+	discoveryTimeout  = flag.Duration("discovery-timeout", 25*time.Second, "Timeout of discovery update")
 )
 
-type DiscoveryFile struct {
-	Entries []DiscoveryTarget `yaml:""`
+type SearchConfig struct {
+	Tag     string `yaml:"tag"`
+	Project string `yaml:"project"`
+	Ports   []int  `yaml:"ports"`
 }
 
 type DiscoveryTarget struct {
-	Targets []string `yaml:"targets"`
-	//MetricsPath string            `yaml:"metrics_path"`
-	Labels map[string]string `yaml:"labels"`
+	Targets []string          `yaml:"targets"`
+	Labels  map[string]string `yaml:"labels"`
 }
 
-func getNewComputeService() *compute.Service {
-	client, err := google.DefaultClient(context.Background(), scope)
+func NewComputeService(ctx context.Context) (*compute.Service, error) {
+	client, err := google.DefaultClient(ctx, compute.ComputeScope)
 	if err != nil {
-		glog.Fatal("Unable to get client")
+		return nil, errors.Wrapf(err, "Unable to get client")
 	}
 
 	service, err := compute.New(client)
 	if err != nil {
-		glog.Fatal("Unable to create compute service")
+		return nil, errors.Wrap(err, "Unable to create compute service")
 	}
 
-	return service
+	return service, nil
 }
 
-func DiscoverComputeByTag(project, tag string) map[string]string {
-	service := getNewComputeService()
-	//fmt.Println(fmt.Sprintf("tag eq %v", tag))
-	// Honestly, you can apparantly do .Filter("tags eq dataflow").Do() here, but i cant get it to work.
-	ilist, err := service.Instances.AggregatedList(project).Do()
+func LoadConfigFile(path string) ([]SearchConfig, error) {
+	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		glog.Fatal(err)
+		return []SearchConfig{}, errors.Wrap(err, "Unable to read config file")
 	}
 
-	retval := make(map[string]string)
-	for _, zoneval := range ilist.Items {
-		for i, instance := range zoneval.Instances {
-			for _, tagn := range zoneval.Instances[i].Tags.Items {
-				if tagn == tag {
-					retval[instance.Name] = instance.NetworkInterfaces[0].NetworkIP
+	var config []SearchConfig
+	err = yaml.Unmarshal(data, &config)
+	if err != nil {
+		return []SearchConfig{}, errors.Wrap(err, "Unable to parse config file")
+	}
+
+	return config, nil
+}
+
+func DiscoverComputeByProjectTag(ctx context.Context, project, tag string) ([]string, error) {
+	service, err := NewComputeService(ctx)
+	if err != nil {
+		return []string{}, err
+	}
+
+	// Honestly, you can apparantly do .Filter("tags eq dataflow").Do() here, but i cant get it to work.
+	ilist, err := service.Instances.AggregatedList(project).Context(ctx).Do()
+	if err != nil {
+		return []string{}, errors.Wrap(err, "Failed to list instances")
+	}
+
+	ips := []string{}
+	for _, innerIList := range ilist.Items {
+		for _, instance := range innerIList.Instances {
+			if instance == nil {
+				log.Infof("Skipping nil instance in %v", project)
+				continue
+			}
+
+			ip, err := findInstanceIP(*instance)
+			if err != nil {
+				log.Errorf("Could not find IP for instance: %+v", err)
+				continue
+			}
+
+			log.V(2).Infof("Instance %v/%v", project, ip)
+			for _, tagn := range instance.Tags.Items {
+				if tagn != tag {
+					continue
 				}
+
+				ips = append(ips, ip)
 			}
 		}
 	}
-	return retval
+
+	log.V(2).Infof("Found %v targets for %v in %v", len(ips), tag, project)
+	return ips, nil
+}
+
+func findInstanceIP(instance compute.Instance) (string, error) {
+	for _, iface := range instance.NetworkInterfaces {
+		if iface == nil {
+			continue
+		}
+
+		return iface.NetworkIP, nil
+	}
+	return "", errors.Errorf("No non nil interfaces found")
+}
+
+func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile string) error {
+	f, err := os.Create(targetFile)
+	if err != nil {
+		return errors.Wrap(err, "Failed to open output file")
+	}
+	defer f.Close()
+
+	d, err := yaml.Marshal(targets)
+	if err != nil {
+		return errors.Wrap(err, "Failed to marshal targets")
+	}
+
+	w := bufio.NewWriter(f)
+	_, err = w.WriteString(string(d))
+	if err != nil {
+		return errors.Wrap(err, "Failed to write to output buffer")
+	}
+	err = w.Flush()
+	if err != nil {
+		return errors.Wrap(err, "Failed to flush to output file")
+	}
+	return nil
+}
+
+func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]DiscoveryTarget, error) {
+	targets := make([]DiscoveryTarget, 0, len(searchConfigs))
+
+	for _, config := range searchConfigs {
+		ips, err := DiscoverComputeByProjectTag(ctx, config.Project, config.Tag)
+		if err != nil {
+			return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to discover instances %v in %v", config.Tag, config.Project)
+		}
+
+		endpoints := make([]string, 0, len(ips)*len(config.Ports))
+		for _, ip := range ips {
+			for _, port := range config.Ports {
+				endpoints = append(endpoints, fmt.Sprintf("%v:%v", ip, port))
+			}
+		}
+
+		targets = append(targets, DiscoveryTarget{
+			Targets: endpoints,
+			Labels: map[string]string{
+				"tag": config.Tag,
+			},
+		})
+	}
+
+	return targets, nil
 }
 
 func main() {
 	flag.Parse()
-	fmt.Println("Running with args: ", *tag, *project, *outfile, *port, *route)
-	for {
-		f, err := os.Create(*outfile)
+	ctx := context.Background()
+
+	if *configFilename == "" {
+		log.Fatalf("Config filename not specified")
+	}
+	if *outputFilename == "" {
+		log.Fatalf("Output filename not specified")
+	}
+
+	config, err := LoadConfigFile(*configFilename)
+	if err != nil {
+		log.Fatalf("Config loading failed: %+v", err)
+	}
+
+	log.V(2).Infof("Loaded config: %v", config)
+	for range time.Tick(time.Second * 30) {
+		ctx, cancel := context.WithTimeout(ctx, *discoveryTimeout)
+
+		log.V(2).Info("Discovering targets")
+		targets, err := DiscoverTargets(ctx, config)
 		if err != nil {
-			glog.Fatal(err)
+			log.Errorf("Failed to run discovery: %+v", err)
+			cancel()
+			continue
 		}
 
-		w := bufio.NewWriter(f)
-		var targets = &DiscoveryTarget{}
-		targets.Targets = []string{}
-		targets.Labels = map[string]string{}
-		//targets.MetricsPath = *route
-		for _, address := range DiscoverComputeByTag(*project, *tag) {
-			targets.Targets = append(targets.Targets, address+":"+*port)
-		}
-		targets.Labels["name"] = *tag
-
-		var fs = &DiscoveryFile{
-			Entries: []DiscoveryTarget{
-				*targets,
-			},
+		log.V(2).Info("Writing targets")
+		err = WriteTargets(ctx, targets, *outputFilename)
+		if err != nil {
+			log.Errorf("Failed to write output file: %+v", err)
 		}
 
-		d, err := yaml.Marshal(&fs.Entries)
-		w.WriteString(string(d))
-		w.Flush()
-		f.Close()
-		time.Sleep(time.Second * 30)
+		cancel()
 	}
 }

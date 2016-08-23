@@ -1,14 +1,5 @@
-#FROM		quay.io/prometheus/busybox:latest
-FROM		ubuntu
-MAINTAINER	Calum Gardner <calum@qubit.com>
+FROM ubuntu
 
-RUN			apt-get update
-RUN			apt-get install -y ca-certificates
+COPY ./prometheus_gce_sd /usr/bin/prometheus_gce_sd
 
-COPY		./gce-discoverer	/gce-discoverer
-COPY		./run.sh			/run.sh
-
-EXPOSE		80
-WORKDIR		/
-
-ENTRYPOINT	["/run.sh"]
+ENTRYPOINT ["/usr/bin/prometheus_gce_sd"]
