@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"time"
+	"strings"
 
 	log "github.com/golang/glog"
 	"github.com/pkg/errors"
@@ -20,14 +21,14 @@ import (
 var (
 	configFilename    = flag.String("config", os.Getenv("GCE_DISCOVERER_CONFIG"), "Path to config file")
 	outputFilename    = flag.String("output", os.Getenv("GCE_DISCOVERER_OUTPUT"), "Path to results file")
-	discoveryInterval = flag.Duration("discovery-interval", 30*time.Second, "Period of discovery update")
+	discoveryInterval = flag.Duration("discovery-interval", 10*time.Second, "Period of discovery update")
 	discoveryTimeout  = flag.Duration("discovery-timeout", 25*time.Second, "Timeout of discovery update")
 )
 
 type SearchConfig struct {
-	Tag     string `yaml:"tag"`
-	Project string `yaml:"project"`
-	Ports   []int  `yaml:"ports"`
+	Tags    []string `yaml:"tags"`
+	Project string   `yaml:"project"`
+	Ports   []int    `yaml:"ports"`
 }
 
 type DiscoveryTarget struct {
@@ -64,19 +65,60 @@ func LoadConfigFile(path string) ([]SearchConfig, error) {
 	return config, nil
 }
 
-func DiscoverComputeByProjectTag(ctx context.Context, project, tag string) ([]string, error) {
+func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]DiscoveryTarget, error) {
+	targets := []DiscoveryTarget{}
+
+	for _, config := range searchConfigs {
+		instances, err := DiscoverComputeByProjectTags(ctx, config.Project, config.Tags)
+		if err != nil {
+			return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to discover instances %v in %v", config.Tags, config.Project)
+		}
+
+		for _, instance := range instances {
+			ip, err := findInstanceIP(instance)
+			if err != nil {
+				log.Errorf("Could not find ip for instance: %+v", err)
+				continue
+			}
+
+			endpoints := make([]string, 0, len(config.Ports))
+			for _, port := range config.Ports {
+				endpoints = append(endpoints, fmt.Sprintf("%v:%v", ip, port))
+			}
+
+			labels := map[string]string{}
+			for _, tag := range instance.Tags.Items {
+				labels[fmt.Sprintf("gce_instance_tag_%v", formatTag(tag))] = "true"
+			}
+			labels["gce_instance_zone"] = parseResource(instance.Zone)
+			labels["gce_instance_type"] = parseResource(instance.MachineType)
+
+			target := DiscoveryTarget{
+				Targets: endpoints,
+				Labels:  labels,
+			}
+
+			targets = append(targets, target)
+		}
+	}
+
+	return targets, nil
+}
+
+
+func DiscoverComputeByProjectTags(ctx context.Context, project string, searchTags []string) ([]*compute.Instance, error) {
 	service, err := NewComputeService(ctx)
 	if err != nil {
-		return []string{}, err
+		return []*compute.Instance{}, err
 	}
 
 	// Honestly, you can apparantly do .Filter("tags eq dataflow").Do() here, but i cant get it to work.
 	ilist, err := service.Instances.AggregatedList(project).Context(ctx).Do()
 	if err != nil {
-		return []string{}, errors.Wrap(err, "Failed to list instances")
+		return []*compute.Instance{}, errors.Wrap(err, "Failed to list instances")
 	}
 
-	ips := []string{}
+	instances := []*compute.Instance{}
 	for _, innerIList := range ilist.Items {
 		for _, instance := range innerIList.Instances {
 			if instance == nil {
@@ -84,28 +126,42 @@ func DiscoverComputeByProjectTag(ctx context.Context, project, tag string) ([]st
 				continue
 			}
 
-			ip, err := findInstanceIP(*instance)
-			if err != nil {
-				log.Errorf("Could not find IP for instance: %+v", err)
-				continue
-			}
-
-			log.V(2).Infof("Instance %v/%v", project, ip)
-			for _, tagn := range instance.Tags.Items {
-				if tagn != tag {
-					continue
-				}
-
-				ips = append(ips, ip)
+			if tagsMatch(searchTags, instance.Tags.Items) {
+				instances = append(instances, instance)
 			}
 		}
 	}
 
-	log.V(2).Infof("Found %v targets for %v in %v", len(ips), tag, project)
-	return ips, nil
+	log.V(2).Infof("Found %v targets for %v in %v", len(instances), searchTags, project)
+	return instances, nil
 }
 
-func findInstanceIP(instance compute.Instance) (string, error) {
+func tagsMatch(searchTags, instanceTags []string) bool {
+	for _, st := range searchTags {
+		found := false
+		for _, it := range instanceTags {
+			if st == it {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func parseResource(resource string) string {
+	parts := strings.Split(resource, "/")
+	return parts[len(parts)-1]
+}
+
+func formatTag(tag string) string {
+	return strings.ToLower(strings.Replace(tag, "-", "_", -1))
+}
+
+func findInstanceIP(instance *compute.Instance) (string, error) {
 	for _, iface := range instance.NetworkInterfaces {
 		if iface == nil {
 			continue
@@ -138,33 +194,6 @@ func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile str
 		return errors.Wrap(err, "Failed to flush to output file")
 	}
 	return nil
-}
-
-func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]DiscoveryTarget, error) {
-	targets := make([]DiscoveryTarget, 0, len(searchConfigs))
-
-	for _, config := range searchConfigs {
-		ips, err := DiscoverComputeByProjectTag(ctx, config.Project, config.Tag)
-		if err != nil {
-			return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to discover instances %v in %v", config.Tag, config.Project)
-		}
-
-		endpoints := make([]string, 0, len(ips)*len(config.Ports))
-		for _, ip := range ips {
-			for _, port := range config.Ports {
-				endpoints = append(endpoints, fmt.Sprintf("%v:%v", ip, port))
-			}
-		}
-
-		targets = append(targets, DiscoveryTarget{
-			Targets: endpoints,
-			Labels: map[string]string{
-				"tag": config.Tag,
-			},
-		})
-	}
-
-	return targets, nil
 }
 
 func main() {
