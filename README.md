@@ -16,7 +16,8 @@ prometheus_gce_sd requires two arguments, a config file and an output file. The 
 
 ``` go
 $ cat >./config.yaml <EOF
-- tag: zookeeper
+- tags:
+    - zookeeper
   project: my-gcp-project
   ports:
     - 8080
