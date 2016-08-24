@@ -1,0 +1,4 @@
+- tags:
+    - zookeeper
+  project: foo
+  ports: []
