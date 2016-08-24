@@ -37,6 +37,26 @@ func TestLoadConfigFile(t *testing.T) {
 			path:          "./test/config_missing.yaml",
 			expectedError: true,
 		},
+		{
+			path:          "./test/config_missing_tags.yaml",
+			expectedError: true,
+		},
+		{
+			path:          "./test/config_missing_project.yaml",
+			expectedError: true,
+		},
+		{
+			path:          "./test/config_missing_ports.yaml",
+			expectedError: true,
+		},
+		{
+			path:          "./test/config_empty_tags.yaml",
+			expectedError: true,
+		},
+		{
+			path:          "./test/config_empty_ports.yaml",
+			expectedError: true,
+		},
 	}
 
 	for _, c := range cases {
