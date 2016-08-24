@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"bytes"
 
 	log "github.com/golang/glog"
 	"github.com/pkg/errors"
@@ -32,49 +33,9 @@ type SearchConfig struct {
 	Ports   []int    `yaml:"ports"`
 }
 
-type Targets []string
 type DiscoveryTarget struct {
-	Targets Targets           `yaml:"targets"`
+	Targets []string           `yaml:"targets"`
 	Labels  map[string]string `yaml:"labels"`
-}
-
-// Implement the sort interface
-func (t Targets) Len() int {
-	return len(t)
-}
-
-func (t Targets) Less(i, j int) bool {
-	return t[i] < t[j]
-}
-
-func (t Targets) Swap(i, j int) {
-	t[i], t[j] = t[j], t[i]
-}
-
-func (dt DiscoveryTarget) IsEqual(ndt DiscoveryTarget) bool {
-	sort.Sort(dt.Targets)
-	sort.Sort(ndt.Targets)
-
-	// Targets
-	for i, t := range dt.Targets {
-		if t != ndt.Targets[i] {
-			return false
-		}
-	}
-
-	// Labels
-	for k, v := range dt.Labels {
-		if _, ok := ndt.Labels[k]; !ok {
-			// Doesnt contain the key
-			return false
-		}
-		if ndt.Labels[k] != v {
-			// Values dont match
-			return false
-		}
-	}
-
-	return true
 }
 
 type DiscoveryTargets []DiscoveryTarget
@@ -121,19 +82,19 @@ func LoadConfigFile(path string) ([]SearchConfig, error) {
 	return config, nil
 }
 
-func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) (DiscoveryTargets, error) {
-	targets := DiscoveryTargets{}
+func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]DiscoveryTarget, error) {
+	targets := []DiscoveryTarget{}
 
 	for _, config := range searchConfigs {
 		instances, err := DiscoverComputeByProjectTags(ctx, config.Project, config.Tags)
 		if err != nil {
-			return DiscoveryTargets{}, errors.Wrapf(err, "Failed to discover instances %v in %v", config.Tags, config.Project)
+			return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to discover instances %v in %v", config.Tags, config.Project)
 		}
 
 		for _, instance := range instances {
 			target, err := InstanceToTarget(instance, config)
 			if err != nil {
-				return DiscoveryTargets{}, err
+				return []DiscoveryTarget{}, err
 			}
 			targets = append(targets, target)
 		}
@@ -233,26 +194,18 @@ func findInstanceIP(instance *compute.Instance) (string, error) {
 	return "", errors.Errorf("No non nil interfaces found")
 }
 
-var (
-	previousTargets DiscoveryTargets
-)
+func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile string) error {
+	t := DiscoveryTargets(targets)
+	sort.Sort(t)
 
-func TargetsEqual(a, b DiscoveryTargets) bool {
-	if len(a) != len(b) {
-		return false
+	newData, err := yaml.Marshal(t)
+	if err != nil {
+		return errors.Wrap(err, "Failed to Marshal YAML")
 	}
-	for i, _ := range a {
-		if a[i].IsEqual(b[i]) {
-			return false
-		}
-	}
-	return true
-}
 
-func WriteTargets(ctx context.Context, targets DiscoveryTargets, targetFile string) error {
-	sort.Sort(targets)
-	// Lets check if we have any new targets, and only create a new file if we do.
-	if !TargetsEqual(targets, previousTargets) {
+	currentData, _ := ioutil.ReadFile(targetFile)
+
+	if bytes.Compare(newData, currentData) == 0 {
 		log.V(2).Info("Skipping write targets due to no new targets.")
 		return nil
 	}
@@ -263,13 +216,8 @@ func WriteTargets(ctx context.Context, targets DiscoveryTargets, targetFile stri
 	}
 	defer f.Close()
 
-	d, err := yaml.Marshal(targets)
-	if err != nil {
-		return errors.Wrap(err, "Failed to marshal targets")
-	}
-
 	w := bufio.NewWriter(f)
-	_, err = w.WriteString(string(d))
+	_, err = w.WriteString(string(newData))
 	if err != nil {
 		return errors.Wrap(err, "Failed to write to output buffer")
 	}
@@ -278,7 +226,6 @@ func WriteTargets(ctx context.Context, targets DiscoveryTargets, targetFile stri
 		return errors.Wrap(err, "Failed to flush to output file")
 	}
 
-	previousTargets = targets
 	return nil
 }
 
