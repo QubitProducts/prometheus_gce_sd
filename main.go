@@ -29,6 +29,8 @@ type SearchConfig struct {
 	Tags    []string `yaml:"tags"`
 	Project string   `yaml:"project"`
 	Ports   []int    `yaml:"ports"`
+
+	XXX map[string]interface{} `yaml:",inline"`
 }
 
 type DiscoveryTarget struct {
@@ -62,7 +64,39 @@ func LoadConfigFile(path string) ([]SearchConfig, error) {
 		return []SearchConfig{}, errors.Wrap(err, "Unable to parse config file")
 	}
 
+	for i, c := range config {
+		err := ValidateConfig(c)
+		if err != nil {
+			return []SearchConfig{}, errors.Wrapf(err, "Failed to validate config entry #%v", i)
+		}
+	}
+
 	return config, nil
+}
+
+func ValidateConfig(conf SearchConfig) error {
+	if len(conf.XXX) != 0 {
+		unknownKeys := []string{}
+		for k := range conf.XXX {
+			unknownKeys = append(unknownKeys, k)
+		}
+
+		return errors.Errorf("Unknown keys in config: %v", strings.Join(unknownKeys, ","))
+	}
+
+	if len(conf.Tags) == 0 {
+		return errors.New("No tags specified")
+	}
+
+	if conf.Project == "" {
+		return errors.New("No project specified")
+	}
+
+	if len(conf.Ports) == 0 {
+		return errors.New("No ports specified")
+	}
+
+	return nil
 }
 
 func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]DiscoveryTarget, error) {
