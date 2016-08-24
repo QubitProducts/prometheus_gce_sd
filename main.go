@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,9 +32,64 @@ type SearchConfig struct {
 	Ports   []int    `yaml:"ports"`
 }
 
+type Targets []string
 type DiscoveryTarget struct {
-	Targets []string          `yaml:"targets"`
+	Targets Targets           `yaml:"targets"`
 	Labels  map[string]string `yaml:"labels"`
+}
+
+// Implement the sort interface
+func (t Targets) Len() int {
+	return len(t)
+}
+
+func (t Targets) Less(i, j int) bool {
+	return t[i] < t[j]
+}
+
+func (t Targets) Swap(i, j int) {
+	t[i], t[j] = t[j], t[i]
+}
+
+func (dt DiscoveryTarget) IsEqual(ndt DiscoveryTarget) bool {
+	sort.Sort(dt.Targets)
+	sort.Sort(ndt.Targets)
+
+	// Targets
+	for i, t := range dt.Targets {
+		if t != ndt.Targets[i] {
+			return false
+		}
+	}
+
+	// Labels
+	for k, v := range dt.Labels {
+		if _, ok := ndt.Labels[k]; !ok {
+			// Doesnt contain the key
+			return false
+		}
+		if ndt.Labels[k] != v {
+			// Values dont match
+			return false
+		}
+	}
+
+	return true
+}
+
+type DiscoveryTargets []DiscoveryTarget
+
+// Implement the sort interface
+func (dt DiscoveryTargets) Len() int {
+	return len(dt)
+}
+
+func (dt DiscoveryTargets) Less(i, j int) bool {
+	return dt[i].Targets[0] < dt[j].Targets[0]
+}
+
+func (dt DiscoveryTargets) Swap(i, j int) {
+	dt[i], dt[j] = dt[j], dt[i]
 }
 
 func NewComputeService(ctx context.Context) (*compute.Service, error) {
@@ -65,19 +121,19 @@ func LoadConfigFile(path string) ([]SearchConfig, error) {
 	return config, nil
 }
 
-func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]DiscoveryTarget, error) {
-	targets := []DiscoveryTarget{}
+func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) (DiscoveryTargets, error) {
+	targets := DiscoveryTargets{}
 
 	for _, config := range searchConfigs {
 		instances, err := DiscoverComputeByProjectTags(ctx, config.Project, config.Tags)
 		if err != nil {
-			return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to discover instances %v in %v", config.Tags, config.Project)
+			return DiscoveryTargets{}, errors.Wrapf(err, "Failed to discover instances %v in %v", config.Tags, config.Project)
 		}
 
 		for _, instance := range instances {
 			target, err := InstanceToTarget(instance, config)
 			if err != nil {
-				return []DiscoveryTarget{}, err
+				return DiscoveryTargets{}, err
 			}
 			targets = append(targets, target)
 		}
@@ -177,7 +233,30 @@ func findInstanceIP(instance *compute.Instance) (string, error) {
 	return "", errors.Errorf("No non nil interfaces found")
 }
 
-func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile string) error {
+var (
+	previousTargets DiscoveryTargets
+)
+
+func TargetsEqual(a, b DiscoveryTargets) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, _ := range a {
+		if a[i].IsEqual(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func WriteTargets(ctx context.Context, targets DiscoveryTargets, targetFile string) error {
+	sort.Sort(targets)
+	// Lets check if we have any new targets, and only create a new file if we do.
+	if !TargetsEqual(targets, previousTargets) {
+		log.V(2).Info("Skipping write targets due to no new targets.")
+		return nil
+	}
+
 	f, err := os.Create(targetFile)
 	if err != nil {
 		return errors.Wrap(err, "Failed to open output file")
@@ -198,6 +277,8 @@ func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile str
 	if err != nil {
 		return errors.Wrap(err, "Failed to flush to output file")
 	}
+
+	previousTargets = targets
 	return nil
 }
 
