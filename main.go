@@ -26,6 +26,7 @@ var (
 )
 
 type SearchConfig struct {
+	Job			string	 `yaml:"job"`
 	Tags    []string `yaml:"tags"`
 	Project string   `yaml:"project"`
 	Ports   []int    `yaml:"ports"`
@@ -136,6 +137,8 @@ func InstanceToTarget(instance *compute.Instance, config SearchConfig) (Discover
 	for _, tag := range instance.Tags.Items {
 		tagLabels = tagLabels + formatTag(tag) + ","
 	}
+
+	labels["job"] = config.Job
 	labels["__meta_gce_instance_tags"] = tagLabels
 	labels["__meta_gce_instance_zone"] = parseResource(instance.Zone)
 	labels["__meta_gce_instance_type"] = parseResource(instance.MachineType)

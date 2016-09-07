@@ -1,0 +1,64 @@
+- targets:
+  - 10.128.0.4:33236
+  labels:
+    __meta_gce_instance_project: qubit-vcloud-eu-proc-stg
+    __meta_gce_instance_tags: ',orca_service_server,'
+    __meta_gce_instance_type: n1-standard-4
+    __meta_gce_instance_zone: us-central1-b
+    job: orca
+- targets:
+  - 10.128.0.5:33236
+  labels:
+    __meta_gce_instance_project: qubit-vcloud-eu-proc-stg
+    __meta_gce_instance_tags: ',orca_service_server,'
+    __meta_gce_instance_type: n1-standard-4
+    __meta_gce_instance_zone: us-central1-b
+    job: orca
+- targets:
+  - 10.132.0.33:33236
+  labels:
+    __meta_gce_instance_project: qubit-vcloud-eu-proc-stg
+    __meta_gce_instance_tags: ',orca_service_server,'
+    __meta_gce_instance_type: n1-standard-4
+    __meta_gce_instance_zone: europe-west1-b
+    job: orca
+- targets:
+  - 10.132.0.36:33236
+  labels:
+    __meta_gce_instance_project: qubit-vcloud-eu-proc-stg
+    __meta_gce_instance_tags: ',orca_service_server,'
+    __meta_gce_instance_type: n1-standard-4
+    __meta_gce_instance_zone: europe-west1-b
+    job: orca
+- targets:
+  - 10.142.0.2:33236
+  labels:
+    __meta_gce_instance_project: qubit-vcloud-eu-proc-stg
+    __meta_gce_instance_tags: ',orca_service_server,'
+    __meta_gce_instance_type: n1-standard-4
+    __meta_gce_instance_zone: us-east1-d
+    job: orca
+- targets:
+  - 10.142.0.3:33236
+  labels:
+    __meta_gce_instance_project: qubit-vcloud-eu-proc-stg
+    __meta_gce_instance_tags: ',orca_service_server,'
+    __meta_gce_instance_type: n1-standard-4
+    __meta_gce_instance_zone: us-east1-d
+    job: orca
+- targets:
+  - 10.132.0.42:33236
+  labels:
+    __meta_gce_instance_project: qubit-vcloud-eu-proc-stg
+    __meta_gce_instance_tags: ',orca_service_server,'
+    __meta_gce_instance_type: n1-standard-4
+    __meta_gce_instance_zone: europe-west1-d
+    job: orca
+- targets:
+  - 10.132.0.37:33236
+  labels:
+    __meta_gce_instance_project: qubit-vcloud-eu-proc-stg
+    __meta_gce_instance_tags: ',orca_service_server,'
+    __meta_gce_instance_type: n1-standard-4
+    __meta_gce_instance_zone: europe-west1-d
+    job: orca
