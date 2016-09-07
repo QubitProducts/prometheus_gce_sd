@@ -26,7 +26,7 @@ var (
 )
 
 type SearchConfig struct {
-	Job			string	 `yaml:"job"`
+	Job     string   `yaml:"job"`
 	Tags    []string `yaml:"tags"`
 	Project string   `yaml:"project"`
 	Ports   []int    `yaml:"ports"`
