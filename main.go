@@ -85,6 +85,10 @@ func ValidateConfig(conf SearchConfig) error {
 		return errors.Errorf("Unknown keys in config: %v", strings.Join(unknownKeys, ","))
 	}
 
+	if conf.Job == "" {
+		return errors.New("No job specified")
+	}
+
 	if len(conf.Tags) == 0 {
 		return errors.New("No tags specified")
 	}
