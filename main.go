@@ -107,16 +107,29 @@ func ValidateConfig(conf SearchConfig) error {
 func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]DiscoveryTarget, error) {
 	targets := []DiscoveryTarget{}
 
+	instancesByProject := map[string][]*compute.Instance{}
+
 	for _, config := range searchConfigs {
-		instances, err := DiscoverComputeByProjectTags(ctx, config.Project, config.Tags)
+		allInstances, ok := instancesByProject[config.Project]
+		if !ok {
+			var err error
+			allInstances, err = listAllInstances(ctx, config.Project)
+			if err != nil {
+				return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to list instances in %v", config.Project)
+			}
+			instancesByProject[config.Project] = allInstances
+		}
+
+		instances, err := DiscoverComputeByTags(ctx, allInstances, config.Tags)
 		if err != nil {
 			return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to discover instances %v in %v", config.Tags, config.Project)
 		}
+		log.V(2).Infof("Found %v targets for %v in %v", len(instances), config.Tags, config.Project)
 
 		for _, instance := range instances {
 			target, err := InstanceToTarget(instance, config)
 			if err != nil {
-				return []DiscoveryTarget{}, err
+				return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to convert %v to a discovery target", instance)
 			}
 			targets = append(targets, target)
 		}
@@ -154,16 +167,10 @@ func InstanceToTarget(instance *compute.Instance, config SearchConfig) (Discover
 	}, nil
 }
 
-func DiscoverComputeByProjectTags(ctx context.Context, project string, searchTags []string) ([]*compute.Instance, error) {
-	allInstances, err := listAllInstances(ctx, project)
-	if err != nil {
-		return []*compute.Instance{}, err
-	}
-
+func DiscoverComputeByTags(ctx context.Context, allInstances []*compute.Instance, searchTags []string) ([]*compute.Instance, error) {
 	instances := []*compute.Instance{}
 	for _, instance := range allInstances {
 		if instance == nil {
-			log.Infof("Skipping nil instance in %v", project)
 			continue
 		}
 
@@ -172,7 +179,6 @@ func DiscoverComputeByProjectTags(ctx context.Context, project string, searchTag
 		}
 	}
 
-	log.V(2).Infof("Found %v targets for %v in %v", len(instances), searchTags, project)
 	return instances, nil
 }
 
