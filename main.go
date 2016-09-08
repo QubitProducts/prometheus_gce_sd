@@ -155,33 +155,49 @@ func InstanceToTarget(instance *compute.Instance, config SearchConfig) (Discover
 }
 
 func DiscoverComputeByProjectTags(ctx context.Context, project string, searchTags []string) ([]*compute.Instance, error) {
-	service, err := NewComputeService(ctx)
+	allInstances, err := listAllInstances(ctx, project)
 	if err != nil {
 		return []*compute.Instance{}, err
 	}
 
-	// Honestly, you can apparantly do .Filter("tags eq dataflow").Do() here, but i cant get it to work.
-	ilist, err := service.Instances.AggregatedList(project).Context(ctx).Do()
-	if err != nil {
-		return []*compute.Instance{}, errors.Wrap(err, "Failed to list instances")
-	}
-
 	instances := []*compute.Instance{}
-	for _, innerIList := range ilist.Items {
-		for _, instance := range innerIList.Instances {
-			if instance == nil {
-				log.Infof("Skipping nil instance in %v", project)
-				continue
-			}
+	for _, instance := range allInstances {
+		if instance == nil {
+			log.Infof("Skipping nil instance in %v", project)
+			continue
+		}
 
-			if tagsMatch(searchTags, instance.Tags.Items) {
-				instances = append(instances, instance)
-			}
+		if tagsMatch(searchTags, instance.Tags.Items) {
+			instances = append(instances, instance)
 		}
 	}
 
 	log.V(2).Infof("Found %v targets for %v in %v", len(instances), searchTags, project)
 	return instances, nil
+}
+
+func listAllInstances(ctx context.Context, project string) ([]*compute.Instance, error) {
+	service, err := NewComputeService(ctx)
+	if err != nil {
+		return []*compute.Instance{}, err
+	}
+
+	instances := []*compute.Instance{}
+	err = service.Instances.AggregatedList(project).Pages(ctx, func(ilist *compute.InstanceAggregatedList) error {
+		for _, innerIList := range ilist.Items {
+			for _, instance := range innerIList.Instances {
+				if instance == nil {
+					log.Infof("Skipping nil instance in %v", project)
+					continue
+				}
+
+				instances = append(instances, instance)
+			}
+		}
+		return nil
+	})
+
+	return instances, errors.Wrap(err, "Failed to list instances")
 }
 
 func tagsMatch(searchTags, instanceTags []string) bool {
