@@ -21,7 +21,7 @@ import (
 var (
 	configFilename    = flag.String("config", os.Getenv("GCE_DISCOVERER_CONFIG"), "Path to config file")
 	outputFilename    = flag.String("output", os.Getenv("GCE_DISCOVERER_OUTPUT"), "Path to results file")
-	discoveryInterval = flag.Duration("discovery-interval", 10*time.Second, "Period of discovery update")
+	discoveryInterval = flag.Duration("discovery-interval", 30*time.Second, "Period of discovery update")
 	discoveryTimeout  = flag.Duration("discovery-timeout", 25*time.Second, "Timeout of discovery update")
 )
 
