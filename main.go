@@ -146,24 +146,16 @@ func InstanceToTargets(instance *compute.Instance, config SearchConfig) ([]Disco
 
 	targets := []DiscoveryTarget{}
 	for _, port := range config.Ports {
-		labels := map[string]string{}
-
-		labels["job"] = config.Job
-		labels["__address__"] = fmt.Sprintf("%v:%v", ip, port)
-
-		tagLabels := ","
-		for _, tag := range instance.Tags.Items {
-			tagLabels = tagLabels + formatTag(tag) + ","
-		}
-
-		labels["__meta_gce_instance_tags"] = tagLabels
-		labels["__meta_gce_instance_zone"] = parseResource(instance.Zone)
-		labels["__meta_gce_instance_type"] = parseResource(instance.MachineType)
-		labels["__meta_gce_instance_project"] = config.Project
-
 		targets = append(targets, DiscoveryTarget{
-			Targets: []string{instance.Name},
-			Labels:  labels,
+			Targets: []string{fmt.Sprintf("%v:%v", ip, port)},
+			Labels: map[string]string{
+				"job": config.Job,
+				"__meta_gce_instance_tags":    fmt.Sprintf(",%v,", strings.Join(instance.Tags.Items, ",")),
+				"__meta_gce_instance_zone":    parseResource(instance.Zone),
+				"__meta_gce_instance_type":    parseResource(instance.MachineType),
+				"__meta_gce_instance_project": config.Project,
+				"__meta_gce_instance_name":    instance.Name,
+			},
 		})
 	}
 	return targets, nil
