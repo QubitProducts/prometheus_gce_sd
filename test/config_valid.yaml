@@ -1,4 +1,5 @@
-- tags:
+- job: gce_zookeeper
+  tags:
     - zookeeper
   project: sandbox
   ports:

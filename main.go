@@ -21,7 +21,7 @@ import (
 var (
 	configFilename    = flag.String("config", os.Getenv("GCE_DISCOVERER_CONFIG"), "Path to config file")
 	outputFilename    = flag.String("output", os.Getenv("GCE_DISCOVERER_OUTPUT"), "Path to results file")
-	discoveryInterval = flag.Duration("discovery-interval", 10*time.Second, "Period of discovery update")
+	discoveryInterval = flag.Duration("discovery-interval", 30*time.Second, "Period of discovery update")
 	discoveryTimeout  = flag.Duration("discovery-timeout", 25*time.Second, "Timeout of discovery update")
 )
 
@@ -85,6 +85,10 @@ func ValidateConfig(conf SearchConfig) error {
 		return errors.Errorf("Unknown keys in config: %v", strings.Join(unknownKeys, ","))
 	}
 
+	if conf.Job == "" {
+		return errors.New("No job specified")
+	}
+
 	if len(conf.Tags) == 0 {
 		return errors.New("No tags specified")
 	}
@@ -103,16 +107,29 @@ func ValidateConfig(conf SearchConfig) error {
 func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]DiscoveryTarget, error) {
 	targets := []DiscoveryTarget{}
 
+	instancesByProject := map[string][]*compute.Instance{}
+
 	for _, config := range searchConfigs {
-		instances, err := DiscoverComputeByProjectTags(ctx, config.Project, config.Tags)
+		allInstances, ok := instancesByProject[config.Project]
+		if !ok {
+			var err error
+			allInstances, err = listAllInstances(ctx, config.Project)
+			if err != nil {
+				return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to list instances in %v", config.Project)
+			}
+			instancesByProject[config.Project] = allInstances
+		}
+
+		instances, err := DiscoverComputeByTags(ctx, allInstances, config.Tags)
 		if err != nil {
 			return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to discover instances %v in %v", config.Tags, config.Project)
 		}
+		log.V(2).Infof("Found %v targets for %v in %v", len(instances), config.Tags, config.Project)
 
 		for _, instance := range instances {
 			target, err := InstanceToTarget(instance, config)
 			if err != nil {
-				return []DiscoveryTarget{}, err
+				return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to convert %v to a discovery target", instance)
 			}
 			targets = append(targets, target)
 		}
@@ -150,34 +167,43 @@ func InstanceToTarget(instance *compute.Instance, config SearchConfig) (Discover
 	}, nil
 }
 
-func DiscoverComputeByProjectTags(ctx context.Context, project string, searchTags []string) ([]*compute.Instance, error) {
+func DiscoverComputeByTags(ctx context.Context, allInstances []*compute.Instance, searchTags []string) ([]*compute.Instance, error) {
+	instances := []*compute.Instance{}
+	for _, instance := range allInstances {
+		if instance == nil {
+			continue
+		}
+
+		if tagsMatch(searchTags, instance.Tags.Items) {
+			instances = append(instances, instance)
+		}
+	}
+
+	return instances, nil
+}
+
+func listAllInstances(ctx context.Context, project string) ([]*compute.Instance, error) {
 	service, err := NewComputeService(ctx)
 	if err != nil {
 		return []*compute.Instance{}, err
 	}
 
-	// Honestly, you can apparantly do .Filter("tags eq dataflow").Do() here, but i cant get it to work.
-	ilist, err := service.Instances.AggregatedList(project).Context(ctx).Do()
-	if err != nil {
-		return []*compute.Instance{}, errors.Wrap(err, "Failed to list instances")
-	}
-
 	instances := []*compute.Instance{}
-	for _, innerIList := range ilist.Items {
-		for _, instance := range innerIList.Instances {
-			if instance == nil {
-				log.Infof("Skipping nil instance in %v", project)
-				continue
-			}
+	err = service.Instances.AggregatedList(project).Pages(ctx, func(ilist *compute.InstanceAggregatedList) error {
+		for _, innerIList := range ilist.Items {
+			for _, instance := range innerIList.Instances {
+				if instance == nil {
+					log.Infof("Skipping nil instance in %v", project)
+					continue
+				}
 
-			if tagsMatch(searchTags, instance.Tags.Items) {
 				instances = append(instances, instance)
 			}
 		}
-	}
+		return nil
+	})
 
-	log.V(2).Infof("Found %v targets for %v in %v", len(instances), searchTags, project)
-	return instances, nil
+	return instances, errors.Wrap(err, "Failed to list instances")
 }
 
 func tagsMatch(searchTags, instanceTags []string) bool {
