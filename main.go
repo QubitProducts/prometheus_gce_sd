@@ -127,44 +127,46 @@ func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]Disco
 		log.V(2).Infof("Found %v targets for %v in %v", len(instances), config.Tags, config.Project)
 
 		for _, instance := range instances {
-			target, err := InstanceToTarget(instance, config)
+			instTargets, err := InstanceToTargets(instance, config)
 			if err != nil {
 				return []DiscoveryTarget{}, errors.Wrapf(err, "Failed to convert %v to a discovery target", instance)
 			}
-			targets = append(targets, target)
+			targets = append(targets, instTargets...)
 		}
 	}
 
 	return targets, nil
 }
 
-func InstanceToTarget(instance *compute.Instance, config SearchConfig) (DiscoveryTarget, error) {
+func InstanceToTargets(instance *compute.Instance, config SearchConfig) ([]DiscoveryTarget, error) {
 	ip, err := findInstanceIP(instance)
 	if err != nil {
-		return DiscoveryTarget{}, errors.Wrap(err, "Could not find ip for instance")
+		return []DiscoveryTarget{}, errors.Wrap(err, "Could not find ip for instance")
 	}
 
-	endpoints := make([]string, 0, len(config.Ports))
+	targets := []DiscoveryTarget{}
 	for _, port := range config.Ports {
-		endpoints = append(endpoints, fmt.Sprintf("%v:%v", ip, port))
+		labels := map[string]string{}
+
+		labels["job"] = config.Job
+		labels["__address__"] = fmt.Sprintf("%v:%v", ip, port)
+
+		tagLabels := ","
+		for _, tag := range instance.Tags.Items {
+			tagLabels = tagLabels + formatTag(tag) + ","
+		}
+
+		labels["__meta_gce_instance_tags"] = tagLabels
+		labels["__meta_gce_instance_zone"] = parseResource(instance.Zone)
+		labels["__meta_gce_instance_type"] = parseResource(instance.MachineType)
+		labels["__meta_gce_instance_project"] = config.Project
+
+		targets = append(targets, DiscoveryTarget{
+			Targets: []string{instance.Name},
+			Labels:  labels,
+		})
 	}
-
-	labels := map[string]string{}
-	tagLabels := ","
-	for _, tag := range instance.Tags.Items {
-		tagLabels = tagLabels + formatTag(tag) + ","
-	}
-
-	labels["job"] = config.Job
-	labels["__meta_gce_instance_tags"] = tagLabels
-	labels["__meta_gce_instance_zone"] = parseResource(instance.Zone)
-	labels["__meta_gce_instance_type"] = parseResource(instance.MachineType)
-	labels["__meta_gce_instance_project"] = config.Project
-
-	return DiscoveryTarget{
-		Targets: endpoints,
-		Labels:  labels,
-	}, nil
+	return targets, nil
 }
 
 func DiscoverComputeByTags(ctx context.Context, allInstances []*compute.Instance, searchTags []string) ([]*compute.Instance, error) {
@@ -283,7 +285,7 @@ func main() {
 	}
 
 	log.V(2).Infof("Loaded config: %v", config)
-	for range time.Tick(time.Second * 30) {
+	for range time.Tick(*discoveryInterval) {
 		ctx, cancel := context.WithTimeout(ctx, *discoveryTimeout)
 
 		log.V(2).Info("Discovering targets")
