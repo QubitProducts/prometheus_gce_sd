@@ -5,12 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	log "github.com/golang/glog"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/context"
 	"gopkg.in/yaml.v2"
 
@@ -19,11 +21,31 @@ import (
 )
 
 var (
-	configFilename    = flag.String("config", os.Getenv("GCE_DISCOVERER_CONFIG"), "Path to config file")
-	outputFilename    = flag.String("output", os.Getenv("GCE_DISCOVERER_OUTPUT"), "Path to results file")
-	discoveryInterval = flag.Duration("discovery-interval", 30*time.Second, "Period of discovery update")
-	discoveryTimeout  = flag.Duration("discovery-timeout", 25*time.Second, "Timeout of discovery update")
+	configFilename    = flag.String("config", "", "Path to config file")
+	outputFilename    = flag.String("output", "", "Path to results file")
+	discoveryInterval = flag.Duration("discovery.interval", 30*time.Second, "Period of discovery update")
+	discoveryTimeout  = flag.Duration("discovery.timeout", 25*time.Second, "Timeout of discovery update")
+	metricsAddr       = flag.String("metrics.addr", ":8080", "Address to serve metrics on")
+
+	targetCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gcesd_targets",
+		Help: "Number of targets discovered, by job name",
+	}, []string{"job"})
+	syncDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "gcesd_sync_duration_seconds",
+		Help: "Duration of the GCE api to prometheus target sync operation",
+	})
+	syncResult = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gcesd_sync_count",
+		Help: "Count of the GCE api to prometheus target sync operation, labeled by result",
+	}, []string{"result"})
 )
+
+func init() {
+	prometheus.MustRegister(targetCount)
+	prometheus.MustRegister(syncDuration)
+	prometheus.MustRegister(syncResult)
+}
 
 type SearchConfig struct {
 	Job     string   `yaml:"job"`
@@ -133,6 +155,15 @@ func DiscoverTargets(ctx context.Context, searchConfigs []SearchConfig) ([]Disco
 			}
 			targets = append(targets, instTargets...)
 		}
+	}
+
+	counts := map[string]int{}
+	for _, t := range targets {
+		job := t.Labels["job"]
+		counts[job] = counts[job] + 1
+	}
+	for j, c := range counts {
+		targetCount.WithLabelValues(j).Set(float64(c))
 	}
 
 	return targets, nil
@@ -265,35 +296,55 @@ func main() {
 	ctx := context.Background()
 
 	if *configFilename == "" {
-		log.Fatalf("Config filename not specified")
+		log.Error("Config filename not specified")
+		os.Exit(1)
 	}
 	if *outputFilename == "" {
-		log.Fatalf("Output filename not specified")
+		log.Error("Output filename not specified")
+		os.Exit(1)
 	}
 
 	config, err := LoadConfigFile(*configFilename)
 	if err != nil {
-		log.Fatalf("Config loading failed: %+v", err)
+		log.Errorf("Failed to load config file %v: %v", *configFilename, err)
+		os.Exit(1)
 	}
 
+	go func() {
+		http.Handle("/metrics", prometheus.Handler())
+		err := http.ListenAndServe(*metricsAddr, nil)
+		if err != nil {
+			log.Errorf("Could not start metrics server on %v: %v", *metricsAddr, err)
+			os.Exit(1)
+		}
+	}()
+
 	log.V(2).Infof("Loaded config: %v", config)
-	for range time.Tick(*discoveryInterval) {
+	loop := func() error {
 		ctx, cancel := context.WithTimeout(ctx, *discoveryTimeout)
+		defer cancel()
+
+		started := time.Now()
+		defer syncDuration.Observe(float64(started.Sub(time.Now())) / float64(time.Second))
 
 		log.V(2).Info("Discovering targets")
 		targets, err := DiscoverTargets(ctx, config)
 		if err != nil {
-			log.Errorf("Failed to run discovery: %+v", err)
-			cancel()
-			continue
+			return errors.Wrap(err, "Could not discover targets")
 		}
 
 		log.V(2).Info("Writing targets")
 		err = WriteTargets(ctx, targets, *outputFilename)
-		if err != nil {
-			log.Errorf("Failed to write output file: %+v", err)
-		}
+		return errors.Wrap(err, "Could not write targets")
+	}
 
-		cancel()
+	for range time.Tick(*discoveryInterval) {
+		err := loop()
+		if err != nil {
+			log.Errorf("Sync loop failed: %v", err)
+			syncResult.WithLabelValues("failed").Inc()
+		} else {
+			syncResult.WithLabelValues("success").Inc()
+		}
 	}
 }
