@@ -82,13 +82,13 @@ func TestLoadConfigFile(t *testing.T) {
 	}
 }
 
-func TestInstanceToTarget(t *testing.T) {
+func TestInstanceToTargets(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
 		instance      *compute.Instance
 		config        SearchConfig
-		expected      DiscoveryTarget
+		expected      []DiscoveryTarget
 		expectedError bool
 	}{
 		{
@@ -104,15 +104,19 @@ func TestInstanceToTarget(t *testing.T) {
 			},
 			config: SearchConfig{
 				Ports:   []int{8080, 9090},
+				Job:     "test-job",
 				Project: "test-project",
 			},
-			expected: DiscoveryTarget{
-				Targets: []string{"127.0.0.1:8080", "127.0.0.1:9090"},
-				Labels: map[string]string{
-					"gce_instance_tag_foo": "true",
-					"gce_instance_zone":    "us-central-1b",
-					"gce_instance_type":    "g1-small",
-					"gce_instance_project": "us-central-1b",
+			expected: []DiscoveryTarget{
+				{
+					Targets: []string{"127.0.0.1:8080", "127.0.0.1:9090"},
+					Labels: map[string]string{
+						"job": "test-job",
+						"gce_instance_tag_foo": "true",
+						"gce_instance_zone":    "us-central-1b",
+						"gce_instance_type":    "g1-small",
+						"gce_instance_project": "us-central-1b",
+					},
 				},
 			},
 			expectedError: false,
@@ -128,6 +132,7 @@ func TestInstanceToTarget(t *testing.T) {
 			},
 			config: SearchConfig{
 				Ports:   []int{8080, 9090},
+				Job:     "test-job",
 				Project: "test-project",
 			},
 			expectedError: true,
@@ -145,15 +150,19 @@ func TestInstanceToTarget(t *testing.T) {
 			},
 			config: SearchConfig{
 				Ports:   []int{8080, 9090},
+				Job:     "test-job",
 				Project: "test-project",
 			},
-			expected: DiscoveryTarget{
-				Targets: []string{"127.0.0.1:8080", "127.0.0.1:9090"},
-				Labels: map[string]string{
-					"gce_instance_tag_foo_bar": "true",
-					"gce_instance_zone":        "us-central-1b",
-					"gce_instance_type":        "g1-small",
-					"gce_instance_project":     "us-central-1b",
+			expected: []DiscoveryTarget{
+				{
+					Targets: []string{"127.0.0.1:8080", "127.0.0.1:9090"},
+					Labels: map[string]string{
+						"job": "test-job",
+						"gce_instance_tag_foo_bar": "true",
+						"gce_instance_zone":        "us-central-1b",
+						"gce_instance_type":        "g1-small",
+						"gce_instance_project":     "us-central-1b",
+					},
 				},
 			},
 			expectedError: false,
@@ -165,7 +174,7 @@ func TestInstanceToTarget(t *testing.T) {
 		t.Run("", func(t *testing.T) {
 			t.Parallel()
 
-			res, err := InstanceToTarget(c.instance, c.config)
+			res, err := InstanceToTargets(c.instance, c.config)
 			if c.expectedError {
 				if err == nil {
 					t.Fatalf("Unexpected success\nResult: %v", prettyPrint(res))
