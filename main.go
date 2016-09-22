@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 
 	"golang.org/x/oauth2/google"
 	compute "google.golang.org/api/compute/v1"
+	"os/signal"
+	"syscall"
 )
 
 var (
@@ -39,12 +43,17 @@ var (
 		Name: "gcesd_sync_count",
 		Help: "Count of the GCE api to prometheus target sync operation, labeled by result",
 	}, []string{"result"})
+	resultWrite = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "gcesd_target_write_count",
+		Help: "Number of times that the output file is updated",
+	})
 )
 
 func init() {
 	prometheus.MustRegister(targetCount)
 	prometheus.MustRegister(syncDuration)
 	prometheus.MustRegister(syncResult)
+	prometheus.MustRegister(resultWrite)
 }
 
 type SearchConfig struct {
@@ -268,16 +277,20 @@ func findInstanceIP(instance *compute.Instance) (string, error) {
 }
 
 func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile string) error {
-	f, err := os.Create(targetFile)
-	if err != nil {
-		return errors.Wrap(err, "Failed to open output file")
-	}
-	defer f.Close()
+	sortedTargets := discoveryTargets(targets)
+	sort.Sort(sortedTargets)
+	targets = []DiscoveryTarget(sortedTargets)
 
 	d, err := yaml.Marshal(targets)
 	if err != nil {
 		return errors.Wrap(err, "Failed to marshal targets")
 	}
+
+	f, err := os.Create(targetFile)
+	if err != nil {
+		return errors.Wrap(err, "Failed to open output file")
+	}
+	defer f.Close()
 
 	w := bufio.NewWriter(f)
 	_, err = w.WriteString(string(d))
@@ -289,6 +302,48 @@ func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile str
 		return errors.Wrap(err, "Failed to flush to output file")
 	}
 	return nil
+}
+
+func targetsDifferent(old, new []DiscoveryTarget) bool {
+	oldSorted := discoveryTargets(old)
+	sort.Sort(oldSorted)
+	old = []DiscoveryTarget(oldSorted)
+	newSorted := discoveryTargets(new)
+	sort.Sort(newSorted)
+	new = []DiscoveryTarget(newSorted)
+
+	newEncoded, _ := yaml.Marshal(new)
+	oldEncoded, _ := yaml.Marshal(old)
+
+	return !bytes.Equal(oldEncoded, newEncoded)
+}
+
+type discoveryTargets []DiscoveryTarget
+
+func (dt discoveryTargets) Len() int           { return len(dt) }
+func (dt discoveryTargets) Less(i, j int) bool { return dt[i].Targets[0] < dt[j].Targets[0] }
+func (dt discoveryTargets) Swap(i, j int)      { dt[i], dt[j] = dt[j], dt[i] }
+
+func tickAndListen(ctx context.Context, interval time.Duration) chan bool {
+	tChan := make(chan bool, 2)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGUSR1)
+
+	go func() {
+		for ctx.Err() == nil {
+			select {
+			case <-time.After(interval):
+				tChan <- false
+			case <-sigChan:
+				tChan <- true
+			case <-ctx.Done():
+			}
+		}
+	}()
+	// Let's kick things off with a bang!
+	tChan <- false
+
+	return tChan
 }
 
 func main() {
@@ -309,6 +364,7 @@ func main() {
 		log.Errorf("Failed to load config file %v: %v", *configFilename, err)
 		os.Exit(1)
 	}
+	log.V(2).Infof("Loaded config: %v", config)
 
 	go func() {
 		http.Handle("/metrics", prometheus.Handler())
@@ -319,8 +375,9 @@ func main() {
 		}
 	}()
 
-	log.V(2).Infof("Loaded config: %v", config)
-	loop := func() error {
+	var currentTargets []DiscoveryTarget
+
+	loop := func(force bool) error {
 		ctx, cancel := context.WithTimeout(ctx, *discoveryTimeout)
 		defer cancel()
 
@@ -328,18 +385,30 @@ func main() {
 		defer syncDuration.Observe(float64(started.Sub(time.Now())) / float64(time.Second))
 
 		log.V(2).Info("Discovering targets")
-		targets, err := DiscoverTargets(ctx, config)
+		newTargets, err := DiscoverTargets(ctx, config)
 		if err != nil {
 			return errors.Wrap(err, "Could not discover targets")
 		}
 
+		if force {
+			log.Info("Forcing write")
+		} else if !targetsDifferent(newTargets, currentTargets) {
+			log.V(2).Info("No changes detected, skipping write")
+			return nil
+		}
+
 		log.V(2).Info("Writing targets")
-		err = WriteTargets(ctx, targets, *outputFilename)
-		return errors.Wrap(err, "Could not write targets")
+		resultWrite.Inc()
+		err = WriteTargets(ctx, newTargets, *outputFilename)
+		if err != nil {
+			return errors.Wrap(err, "Could not write targets")
+		}
+		currentTargets = newTargets
+		return nil
 	}
 
-	for range time.Tick(*discoveryInterval) {
-		err := loop()
+	for force := range tickAndListen(ctx, *discoveryInterval) {
+		err := loop(force)
 		if err != nil {
 			log.Errorf("Sync loop failed: %v", err)
 			syncResult.WithLabelValues("failed").Inc()
