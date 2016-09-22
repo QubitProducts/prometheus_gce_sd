@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -268,16 +270,30 @@ func findInstanceIP(instance *compute.Instance) (string, error) {
 }
 
 func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile string) error {
-	f, err := os.Create(targetFile)
-	if err != nil {
-		return errors.Wrap(err, "Failed to open output file")
-	}
-	defer f.Close()
+	sortedTargets := discoveryTargets(targets)
+	sort.Sort(sortedTargets)
+	targets = []DiscoveryTarget(sortedTargets)
 
 	d, err := yaml.Marshal(targets)
 	if err != nil {
 		return errors.Wrap(err, "Failed to marshal targets")
 	}
+
+	existing, err := ioutil.ReadFile(targetFile)
+	if err != nil && !os.IsNotExist(err) {
+		return errors.Wrap(err, "Could not read existing output file")
+	} else if err != nil {
+		log.V(2).Info("No previous target file, writing")
+	} else if bytes.Compare(d, existing) == 0 {
+		log.V(2).Info("Skipping write due to identical output")
+		return nil
+	}
+
+	f, err := os.Create(targetFile)
+	if err != nil {
+		return errors.Wrap(err, "Failed to open output file")
+	}
+	defer f.Close()
 
 	w := bufio.NewWriter(f)
 	_, err = w.WriteString(string(d))
@@ -290,6 +306,12 @@ func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile str
 	}
 	return nil
 }
+
+type discoveryTargets []DiscoveryTarget
+
+func (dt discoveryTargets) Len() int           { return len(dt) }
+func (dt discoveryTargets) Less(i, j int) bool { return dt[i].Targets[0] < dt[j].Targets[0] }
+func (dt discoveryTargets) Swap(i, j int)      { dt[i], dt[j] = dt[j], dt[i] }
 
 func main() {
 	flag.Parse()
