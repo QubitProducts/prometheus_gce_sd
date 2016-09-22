@@ -7,8 +7,10 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
+	"bytes"
 
 	log "github.com/golang/glog"
 	"github.com/pkg/errors"
@@ -57,8 +59,23 @@ type SearchConfig struct {
 }
 
 type DiscoveryTarget struct {
-	Targets []string          `yaml:"targets"`
+	Targets []string           `yaml:"targets"`
 	Labels  map[string]string `yaml:"labels"`
+}
+
+type DiscoveryTargets []DiscoveryTarget
+
+// Implement the sort interface
+func (dt DiscoveryTargets) Len() int {
+	return len(dt)
+}
+
+func (dt DiscoveryTargets) Less(i, j int) bool {
+	return dt[i].Targets[0] < dt[j].Targets[0]
+}
+
+func (dt DiscoveryTargets) Swap(i, j int) {
+	dt[i], dt[j] = dt[j], dt[i]
 }
 
 func NewComputeService(ctx context.Context) (*compute.Service, error) {
@@ -268,19 +285,29 @@ func findInstanceIP(instance *compute.Instance) (string, error) {
 }
 
 func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile string) error {
+	t := DiscoveryTargets(targets)
+	sort.Sort(t)
+
+	newData, err := yaml.Marshal(t)
+	if err != nil {
+		return errors.Wrap(err, "Failed to Marshal YAML")
+	}
+
+	currentData, _ := ioutil.ReadFile(targetFile)
+
+	if bytes.Compare(newData, currentData) == 0 {
+		log.V(2).Info("Skipping write targets due to no new targets.")
+		return nil
+	}
+
 	f, err := os.Create(targetFile)
 	if err != nil {
 		return errors.Wrap(err, "Failed to open output file")
 	}
 	defer f.Close()
 
-	d, err := yaml.Marshal(targets)
-	if err != nil {
-		return errors.Wrap(err, "Failed to marshal targets")
-	}
-
 	w := bufio.NewWriter(f)
-	_, err = w.WriteString(string(d))
+	_, err = w.WriteString(string(newData))
 	if err != nil {
 		return errors.Wrap(err, "Failed to write to output buffer")
 	}
@@ -288,6 +315,7 @@ func WriteTargets(ctx context.Context, targets []DiscoveryTarget, targetFile str
 	if err != nil {
 		return errors.Wrap(err, "Failed to flush to output file")
 	}
+
 	return nil
 }
 
