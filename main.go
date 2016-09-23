@@ -411,7 +411,7 @@ func main() {
 		err := loop(force)
 		if err != nil {
 			log.Errorf("Sync loop failed: %v", err)
-			syncResult.WithLabelValues("failed").Inc()
+			syncResult.WithLabelValues("failure").Inc()
 		} else {
 			syncResult.WithLabelValues("success").Inc()
 		}
